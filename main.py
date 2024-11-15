@@ -229,15 +229,15 @@ class BiodiversityMap:
     def create_3d_map(self, year: int, species_filter: str = 'All Species') -> folium.Map:
 
         filtered_data = self.data_df[self.data_df['YEAR'] == year].copy()
-        
+
         if species_filter != 'All Species':
             filtered_data = filtered_data[filtered_data['GENUS_SPECIES'] == species_filter]
-        
+
         if len(filtered_data) == 0:
             map_center = [self.default_lat, self.default_lon]
         else:
             map_center = [filtered_data['LATITUDE'].mean(), filtered_data['LONGITUDE'].mean()]
-        
+
         m = folium.Map(
             location=map_center,
             zoom_start=4,
@@ -451,14 +451,15 @@ class BiodiversityMap:
         m.get_root().html.add_child(folium.Element(title_html))
 
 
-def within_radius(row, weather_data, radius_km=10):
+def within_radius(row, weather_df, radius_km=50):
 
     bio_point = (row['LATITUDE'], row['LONGITUDE'])
-    weather_points = weather_data[['latitude', 'longitude']].values
+    weather_points = weather_df[['latitude', 'longitude']].values
     return any(geodesic(bio_point, tuple(wp)).km <= radius_km for wp in weather_points)
 
 
 def main():
+
     data_path = "BioTIMEQuery_24_06_2021.csv"
     model_path = "biodiversity_model.pkl"    
     number_of_years = 1 # edit this if it is taking too long
@@ -502,37 +503,40 @@ def main():
             how='inner'
         )
 
-        # data_df[data_df.apply(within_radius, weather_data=weather_df, axis=1)]
-
+        # merged_df = pd.DataFrame()
+        # for _, row in data_df.iterrows():
+        #     if within_radius(row, weather_df):
+        #         merged_df = merged_df.append(row)
+        
         print(f"Merged dataset contains {len(merged_df)} records")
         print(merged_df.head())
 
-        # bio_map = BiodiversityMap(data_df)
+        bio_map = BiodiversityMap(merged_df)
         
-        # # basic time slider map
-        # bio_map.create_time_slider_map('biodiversity_timeline_map.html')
-        # logger.info("timeline map created")
+        # basic time slider map
+        bio_map.create_time_slider_map('biodiversity_timeline_map.html')
+        logger.info("timeline map created")
         
-        # # simple 2D heatmap for abundance
-        # bio_map.create_simple_2d_map('biodiversity_heatmap.html')
-        # logger.info("heatmap created")
+        # simple 2D heatmap for abundance
+        bio_map.create_simple_2d_map('biodiversity_heatmap.html')
+        logger.info("heatmap created")
         
-        # if QuantumModel.model_already_exists(model_path):
-        #     logger.info("loading existing model...")
-        #     model = QuantumModel.load_model(model_path)
-        # else:
-        #     logger.info("training new model...")
-        #     model = QuantumModel()
-        #     X_scaled, y_scaled = model.prepare_data(data_df, include_climate=True)
+        if QuantumModel.model_already_exists(model_path):
+            logger.info("loading existing model...")
+            model = QuantumModel.load_model(model_path)
+        else:
+            logger.info("training new model...")
+            model = QuantumModel()
+            X_scaled, y_scaled = model.prepare_data(data_df, include_climate=True)
             
-        #     # split data
-        #     X_train, X_temp, y_train, y_temp = train_test_split(X_scaled, y_scaled, test_size=0.3, random_state=123)
-        #     X_val, X_test, y_val, y_test = train_test_split(X_temp, y_temp, test_size=0.5, random_state=123)
+            # split data
+            X_train, X_temp, y_train, y_temp = train_test_split(X_scaled, y_scaled, test_size=0.3, random_state=123)
+            X_val, X_test, y_val, y_test = train_test_split(X_temp, y_temp, test_size=0.5, random_state=123)
             
-        #     # train model
-        #     weights, losses = model.train(X_train, y_train)
-        #     model.save_model(model_path)
-        #     logger.info("model trained and saved successfully")
+            # train model
+            weights, losses = model.train(X_train, y_train)
+            model.save_model(model_path)
+            logger.info("model trained and saved successfully")
         
         # # test prediction
         # location = [47.4, -95.12]
