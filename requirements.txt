@@ -3,7 +3,6 @@ pandas
 pennylane
 folium
 branca
-requests
 scikit-learn
 fastparquet
 geopy
