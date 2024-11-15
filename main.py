@@ -464,6 +464,16 @@ def main():
     model_path = "biodiversity_model.pkl"    
     number_of_years = 1 # edit this if it is taking too long
     
+    ## clean up all data sets - remove rows that would have NaNs on the joining fields i.e. lat/long is nan
+    ## merge the data sets on lat/long - round for now
+    ## either choose to filter down to one species - maybe for testing the pipeline/full path
+    ## v2 -> sum across species per rounded lat/long
+    ## fix the lat/long map - currently they are being centered in one area
+    ## generate all visualisations separately
+    ## combine prediction map with timeline slider
+    ## generate a plot of actual vs predicted based on validation data set - graph to show performance
+    
+
     try:
         # prevent dtype warning - probably should set to true on your machine Winnie
         data_df = pd.read_csv(data_path, encoding='latin1', low_memory=False)
@@ -491,10 +501,10 @@ def main():
 
 
         # spatial merging with just rounding - if geodesic/radius taking too long
-        data_df['rounded_lat'] = data_df['LATITUDE'].round(2)
-        data_df['rounded_lon'] = data_df['LONGITUDE'].round(2)
-        weather_df['rounded_lat'] = weather_df['latitude'].round(2)
-        weather_df['rounded_lon'] = weather_df['longitude'].round(2)
+        data_df['rounded_lat'] = data_df['LATITUDE'].round(1)
+        data_df['rounded_lon'] = data_df['LONGITUDE'].round(1)
+        weather_df['rounded_lat'] = weather_df['latitude'].round(1)
+        weather_df['rounded_lon'] = weather_df['longitude'].round(1)
 
         merged_df = pd.merge(
             data_df, weather_df, 
