@@ -4,6 +4,7 @@ import pennylane as qml
 import pickle
 import folium
 from folium import plugins
+from folium.plugins import TimestampedGeoJson, MarkerCluster
 import branca.colormap as cm
 from datetime import datetime
 import requests
@@ -226,54 +227,53 @@ class BiodiversityMap:
         self.default_lat = data_df['LATITUDE'].mean()
         self.default_lon = data_df['LONGITUDE'].mean()
         
-    def create_3d_map(self, year: int, species_filter: str = 'All Species') -> folium.Map:
-
-        filtered_data = self.data_df[self.data_df['YEAR'] == year].copy()
-
+    def create_map(self, species_filter: str = 'All Species', output_path: str = 'simple_map.html') -> folium.Map:
+    
+        filtered_data = self.data_df.copy()
+        # species filter if not "All Species"
         if species_filter != 'All Species':
-            filtered_data = filtered_data[filtered_data['GENUS_SPECIES'] == species_filter]
-
-        if len(filtered_data) == 0:
-            map_center = [self.default_lat, self.default_lon]
-        else:
-            map_center = [filtered_data['LATITUDE'].mean(), filtered_data['LONGITUDE'].mean()]
-
-        m = folium.Map(
-            location=map_center,
-            zoom_start=4,
-            tiles='CartoDB positron',
-            attr='CartoDB'
-        )
+            filtered_data = self.data_df[self.data_df['GENUS_SPECIES'] == species_filter].copy()
         
-        # colourmap for abundance
-        max_abundance = filtered_data['sum.allrawdata.ABUNDANCE'].max()
-        colourmap = cm.LinearColormap(
-            colors=['yellow', 'orange', 'red'],
-            vmin=0,
-            vmax=max_abundance
-        )
-        m.add_child(colourmap)
+        map_center = [filtered_data['LATITUDE'].mean(), filtered_data['LONGITUDE'].mean()]
+
+        m = folium.Map(location=map_center, zoom_start=4)
         
-        # marker clusters
-        marker_cluster = plugins.MarkerCluster().add_to(m)
+        marker_cluster = MarkerCluster().add_to(m)
         for idx, row in filtered_data.iterrows():
+            # for debugging for now, can make it look nicer later
             popup_content = f"""
                 <b>Species:</b> {row['GENUS_SPECIES']}<br>
-                <b>Abundance:</b> {row['sum.allrawdata.ABUNDANCE']:.2f}<br>
-                <b>Location:</b> ({row['LATITUDE']:.4f}, {row['LONGITUDE']:.4f})<br>
-                <b>Year:</b> {row['YEAR']}
+                <b>Abundance:</b> {row['sum.allrawdata.ABUNDANCE']}<br>
+                <b>Biomass:</b> {row['sum.allrawdata.BIOMASS']}<br>
+                <b>Plot:</b> {row['PLOT']}<br>
+                <b>Location:</b> ({row['LATITUDE']}, {row['LONGITUDE']})
             """
-            
-            folium.CircleMarker(
-                location = [row['LATITUDE'], row['LONGITUDE']],
-                radius = np.sqrt(row['sum.allrawdata.ABUNDANCE'])/2,
-                popup = folium.Popup(popup_content, max_width=300),
-                color = colourmap(row['sum.allrawdata.ABUNDANCE']),
-                fill = True,
-                fill_opacity = 0.7
+            folium.Marker(
+                location=[row['LATITUDE'], row['LONGITUDE']],
+                popup=folium.Popup(popup_content, max_width=300),
+                tooltip=row['GENUS_SPECIES']
             ).add_to(marker_cluster)
         
-        self._add_title(m, f"Biodiversity Distribution {year} ({len(filtered_data)} locations)")
+        title_html = f'''
+            <div style="position: fixed; 
+                        top: 10px; 
+                        left: 50px; 
+                        width: 300px; 
+                        height: 30px; 
+                        z-index:9999; 
+                        background-color: white; 
+                        font-size:16px;
+                        font-weight: bold;
+                        padding: 5px;
+                        border-radius: 5px;
+                        border: 2px solid gray;">
+                    Species Distribution Map ({len(filtered_data)} locations)
+            </div>
+        '''
+        m.get_root().html.add_child(folium.Element(title_html))
+        self._add_title(m, f"Overall Biodiversity Distribution")
+        m.save(output_path)
+        logger.info(f"Simple map saved to {output_path}")
         return m
 
     def create_simple_2d_map(self, output_path: str = 'simple_biodiversity_map.html'):
@@ -417,14 +417,7 @@ class BiodiversityMap:
             geojson_data,
             styledict=style_dict
         ).add_to(m)
-        
-        # play button
-        plugins.FloatImage(
-            'https://cdn-icons-png.flaticon.com/512/0/375.png',
-            bottom=5,
-            left=5
-        ).add_to(m)
-        
+                
         self._add_title(m, "Biodiversity Distribution Over Time")
         m.save(output_path)
         logger.info(f"Time slider map saved to {output_path}")
@@ -472,7 +465,7 @@ def main():
     ## generate all visualisations separately
     ## combine prediction map with timeline slider
     ## generate a plot of actual vs predicted based on validation data set - graph to show performance
-    
+
 
     try:
         # prevent dtype warning - probably should set to true on your machine Winnie
@@ -487,6 +480,7 @@ def main():
         # join weather data to stations/cities as we need the lat/long
         stations_df = pd.read_csv('cities.csv')
         weather_df = weather_df.merge(stations_df[['station_id', 'latitude', 'longitude']], on='station_id', how='left')
+        logger.info(f"joined weather table {weather_df.head(10)}")
 
         data_df.columns = data_df.columns.str.strip()
         weather_df.columns = weather_df.columns.str.strip()
@@ -495,22 +489,22 @@ def main():
         weather_df = weather_df.dropna(subset=['latitude', 'longitude'])
         
         max_year = data_df['YEAR'].max()
-        data_df = data_df[data_df['YEAR'] >= (max_year - number_of_years)]
+        data_df = data_df[data_df['YEAR'] == 2012]
         logger.info(f"filtered data to last {number_of_years} years from {max_year}")
         logger.info(f"number of rows to be processed {len(data_df.index)}")
 
 
         # spatial merging with just rounding - if geodesic/radius taking too long
-        data_df['rounded_lat'] = data_df['LATITUDE'].round(1)
-        data_df['rounded_lon'] = data_df['LONGITUDE'].round(1)
-        weather_df['rounded_lat'] = weather_df['latitude'].round(1)
-        weather_df['rounded_lon'] = weather_df['longitude'].round(1)
+        data_df['rounded_lat'] = data_df['LATITUDE'].round(2)
+        data_df['rounded_lon'] = data_df['LONGITUDE'].round(2)
+        weather_df['rounded_lat'] = weather_df['latitude'].round(2)
+        weather_df['rounded_lon'] = weather_df['longitude'].round(2)
 
         merged_df = pd.merge(
             data_df, weather_df, 
             left_on=['rounded_lat', 'rounded_lon'], 
             right_on=['rounded_lat', 'rounded_lon'], 
-            how='inner'
+            how='left'
         )
 
         # merged_df = pd.DataFrame()
@@ -522,7 +516,11 @@ def main():
         print(merged_df.head())
 
         bio_map = BiodiversityMap(merged_df)
-        
+
+        # basic map
+        bio_map.create_map()
+        logger.info("timeline map created")
+
         # basic time slider map
         bio_map.create_time_slider_map('biodiversity_timeline_map.html')
         logger.info("timeline map created")
