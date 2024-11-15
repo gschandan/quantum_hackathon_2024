@@ -461,6 +461,7 @@ def main():
         logger.info("data loaded successfully")
         logger.info(f"number of rows loaded {len(data_df.index)}")
 
+        data_df.columns = data_df.columns.str.strip()
         max_year = data_df['YEAR'].max()
         data_df = data_df[data_df['YEAR'] >= (max_year - number_of_years)]
         data_df = data_df.dropna(subset=['LATITUDE', 'LONGITUDE'])

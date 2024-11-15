@@ -1,7 +1,7 @@
 # data files
 *.csv
 *.zip
-
+*.parquet
 
 
 # Byte-compiled / optimized / DLL files

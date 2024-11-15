@@ -5,4 +5,4 @@ folium
 branca
 requests
 scikit-learn
-pylint
+fastparquet
