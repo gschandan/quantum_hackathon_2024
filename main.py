@@ -13,6 +13,7 @@ from sklearn.model_selection import train_test_split
 from typing import Tuple, List, Dict
 import logging
 from pathlib import Path
+from geopy.distance import geodesic
 
 # logging as it's really annoying failing halfway through and not realising why...
 logging.basicConfig(level=logging.INFO)
@@ -450,61 +451,99 @@ class BiodiversityMap:
         m.get_root().html.add_child(folium.Element(title_html))
 
 
+def within_radius(row, weather_data, radius_km=10):
+
+    bio_point = (row['LATITUDE'], row['LONGITUDE'])
+    weather_points = weather_data[['latitude', 'longitude']].values
+    return any(geodesic(bio_point, tuple(wp)).km <= radius_km for wp in weather_points)
+
+
 def main():
     data_path = "BioTIMEQuery_24_06_2021.csv"
-    model_path = "biodiversity_model.pkl"
+    model_path = "biodiversity_model.pkl"    
     number_of_years = 1 # edit this if it is taking too long
     
     try:
         # prevent dtype warning - probably should set to true on your machine Winnie
         data_df = pd.read_csv(data_path, encoding='latin1', low_memory=False)
-        logger.info("data loaded successfully")
+        logger.info("bio data loaded successfully")
         logger.info(f"number of rows loaded {len(data_df.index)}")
 
+        weather_df = pd.read_parquet('daily_weather.parquet', engine='fastparquet')
+        logger.info("weather data loaded successfully")
+        logger.info(f"number of rows loaded {len(weather_df.index)}")
+
+        # join weather data to stations/cities as we need the lat/long
+        stations_df = pd.read_csv('cities.csv')
+        weather_df = weather_df.merge(stations_df[['station_id', 'latitude', 'longitude']], on='station_id', how='left')
+
         data_df.columns = data_df.columns.str.strip()
+        weather_df.columns = weather_df.columns.str.strip()
+
+        data_df = data_df.dropna(subset=['LATITUDE', 'LONGITUDE'])
+        weather_df = weather_df.dropna(subset=['latitude', 'longitude'])
+        
         max_year = data_df['YEAR'].max()
         data_df = data_df[data_df['YEAR'] >= (max_year - number_of_years)]
-        data_df = data_df.dropna(subset=['LATITUDE', 'LONGITUDE'])
         logger.info(f"filtered data to last {number_of_years} years from {max_year}")
         logger.info(f"number of rows to be processed {len(data_df.index)}")
 
-        bio_map = BiodiversityMap(data_df)
-        
-        # basic time slider map
-        bio_map.create_time_slider_map('biodiversity_timeline_map.html')
-        logger.info("timeline map created")
-        
-        # simple 2D heatmap for abundance
-        bio_map.create_simple_2d_map('biodiversity_heatmap.html')
-        logger.info("heatmap created")
-        
-        if QuantumModel.model_already_exists(model_path):
-            logger.info("loading existing model...")
-            model = QuantumModel.load_model(model_path)
-        else:
-            logger.info("training new model...")
-            model = QuantumModel()
-            X_scaled, y_scaled = model.prepare_data(data_df, include_climate=True)
-            
-            # split data
-            X_train, X_temp, y_train, y_temp = train_test_split(X_scaled, y_scaled, test_size=0.3, random_state=123)
-            X_val, X_test, y_val, y_test = train_test_split(X_temp, y_temp, test_size=0.5, random_state=123)
-            
-            # train model
-            weights, losses = model.train(X_train, y_train)
-            model.save_model(model_path)
-            logger.info("model trained and saved successfully")
-        
-        # test prediction
-        location = [47.4, -95.12]
-        years_ahead = 5
-        prediction = model.predict_future_abundance(location, years_ahead)
-        logger.info(f"Predicted abundance in {years_ahead} years at location "
-                   f"{location}: {prediction:.2f}")
 
-         # prediction comparison map
-        bio_map.create_prediction_comparison_map(model, years_ahead=5, output_path='biodiversity_prediction_map.html')
-        logger.info("comparison map created")
+        # spatial merging with just rounding - if geodesic/radius taking too long
+        data_df['rounded_lat'] = data_df['LATITUDE'].round(2)
+        data_df['rounded_lon'] = data_df['LONGITUDE'].round(2)
+        weather_df['rounded_lat'] = weather_df['latitude'].round(2)
+        weather_df['rounded_lon'] = weather_df['longitude'].round(2)
+
+        merged_df = pd.merge(
+            data_df, weather_df, 
+            left_on=['rounded_lat', 'rounded_lon'], 
+            right_on=['rounded_lat', 'rounded_lon'], 
+            how='inner'
+        )
+
+        # data_df[data_df.apply(within_radius, weather_data=weather_df, axis=1)]
+
+        print(f"Merged dataset contains {len(merged_df)} records")
+        print(merged_df.head())
+
+        # bio_map = BiodiversityMap(data_df)
+        
+        # # basic time slider map
+        # bio_map.create_time_slider_map('biodiversity_timeline_map.html')
+        # logger.info("timeline map created")
+        
+        # # simple 2D heatmap for abundance
+        # bio_map.create_simple_2d_map('biodiversity_heatmap.html')
+        # logger.info("heatmap created")
+        
+        # if QuantumModel.model_already_exists(model_path):
+        #     logger.info("loading existing model...")
+        #     model = QuantumModel.load_model(model_path)
+        # else:
+        #     logger.info("training new model...")
+        #     model = QuantumModel()
+        #     X_scaled, y_scaled = model.prepare_data(data_df, include_climate=True)
+            
+        #     # split data
+        #     X_train, X_temp, y_train, y_temp = train_test_split(X_scaled, y_scaled, test_size=0.3, random_state=123)
+        #     X_val, X_test, y_val, y_test = train_test_split(X_temp, y_temp, test_size=0.5, random_state=123)
+            
+        #     # train model
+        #     weights, losses = model.train(X_train, y_train)
+        #     model.save_model(model_path)
+        #     logger.info("model trained and saved successfully")
+        
+        # # test prediction
+        # location = [47.4, -95.12]
+        # years_ahead = 5
+        # prediction = model.predict_future_abundance(location, years_ahead)
+        # logger.info(f"Predicted abundance in {years_ahead} years at location "
+        #            f"{location}: {prediction:.2f}")
+
+        #  # prediction comparison map
+        # bio_map.create_prediction_comparison_map(model, years_ahead=5, output_path='biodiversity_prediction_map.html')
+        # logger.info("comparison map created")
         
     except Exception as e:
         logger.error(f"An error occurred, don't panic: {str(e)}")

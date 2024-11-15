@@ -6,3 +6,4 @@ branca
 requests
 scikit-learn
 fastparquet
+geopy
