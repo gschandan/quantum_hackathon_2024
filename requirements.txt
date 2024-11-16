@@ -6,3 +6,4 @@ branca
 scikit-learn
 fastparquet
 geopy
+seaborn

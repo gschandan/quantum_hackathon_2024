@@ -11,6 +11,7 @@ import requests
 import os
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.model_selection import train_test_split
+from scipy.spatial.distance import cdist
 from typing import Tuple, List, Dict
 import logging
 from pathlib import Path
@@ -64,59 +65,18 @@ class QuantumModel:
         logger.info(f"Circuit created with n_qubits: {self.n_qubits} and layers: {self.n_layers}")
         return circuit
 
-    def _get_climate_data(self, lat: float, lon: float, year: int) -> Dict:
+    def prepare_data(self, data_df: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
 
-        # getting rate limited so for now, just returning some mock data whilst I try and find a dataset with lat/long
-
-
-        # base_url = "https://archive-api.open-meteo.com/v1/archive"
-        # start_date = f"{year}-01-01"
-        # end_date = f"{year}-12-31"
+        features = [
+            'LATITUDE', 'LONGITUDE', 'YEAR',
+            'avg_temp_c', 'min_temp_c', 'max_temp_c', 'precipitation_mm'
+        ]
         
-        # params = {
-        #     "latitude": lat,
-        #     "longitude": lon,
-        #     "start_date": start_date,
-        #     "end_date": end_date,
-        #     "daily": "temperature_2m_mean,precipitation_sum"
-        # }
-        
-        # try:
-        #     response = requests.get(base_url, params=params)
-        #     data = response.json()
-            
-        #     # yearly averages
-        #     temp_mean = np.mean(data['daily']['temperature_2m_mean'])
-        #     precip_sum = np.sum(data['daily']['precipitation_sum'])
-
-        #     logger.info(f"fetched average climate data for year {year}. temp_mean: {temp_mean} precip_sum: {precip_sum}")
-        #     return {
-        #         "temperature": temp_mean,
-        #         "precipitation": precip_sum
-        #     }
-        # except Exception as e:
-        #     logger.error(f"Error fetching climate data: {e}")
-        #     return {"temperature": 0, "precipitation": 0}
-
-        return {"temperature": 10, "precipitation": 10}
-
-    def prepare_data(self, data_df: pd.DataFrame, include_climate: bool = True) -> Tuple[np.ndarray, np.ndarray]:
-
-        features = ['LATITUDE', 'LONGITUDE', 'YEAR']
-        processed_data = data_df[features + ['sum.allrawdata.ABUNDANCE']].dropna()
+        processed_data = data_df[features + ['sum.allrawdata.ABUNDANCE']].copy()
+        processed_data = processed_data.dropna()
         
         self.base_year = processed_data['YEAR'].min()
         processed_data['YEARS_SINCE_START'] = processed_data['YEAR'] - self.base_year
-        
-        if include_climate:
-            climate_data = []
-            for _, row in processed_data.iterrows():
-                climate = self._get_climate_data(row['LATITUDE'], row['LONGITUDE'], int(row['YEAR']))
-                climate_data.append(climate)
-            
-            processed_data['TEMPERATURE'] = [d['temperature'] for d in climate_data]
-            processed_data['PRECIPITATION'] = [d['precipitation'] for d in climate_data]
-            features.extend(['TEMPERATURE', 'PRECIPITATION'])
         
         X = processed_data[features]
         y = processed_data['sum.allrawdata.ABUNDANCE']
@@ -180,11 +140,7 @@ class QuantumModel:
             location[1],  # long
             future_year - self.base_year  # scaled future year
         ]
-        
-        if include_climate:
-            climate = self._get_climate_data(location[0], location[1], future_year)
-            base_input.extend([climate['temperature'], climate['precipitation']])
-        
+                
         scaled_input = self.feature_scaler.transform([base_input])[0]
         prediction = self.predict([scaled_input])[0]
         
@@ -227,152 +183,93 @@ class BiodiversityMap:
         self.default_lat = data_df['LATITUDE'].mean()
         self.default_lon = data_df['LONGITUDE'].mean()
         
-    def create_map(self, species_filter: str = 'All Species', output_path: str = 'simple_map.html') -> folium.Map:
-    
-        filtered_data = self.data_df.copy()
-        # species filter if not "All Species"
-        if species_filter != 'All Species':
-            filtered_data = self.data_df[self.data_df['GENUS_SPECIES'] == species_filter].copy()
-        
-        map_center = [filtered_data['LATITUDE'].mean(), filtered_data['LONGITUDE'].mean()]
-
-        m = folium.Map(location=map_center, zoom_start=4)
-        
-        marker_cluster = MarkerCluster().add_to(m)
-        for idx, row in filtered_data.iterrows():
-            # for debugging for now, can make it look nicer later
-            popup_content = f"""
-                <b>Species:</b> {row['GENUS_SPECIES']}<br>
-                <b>Abundance:</b> {row['sum.allrawdata.ABUNDANCE']}<br>
-                <b>Biomass:</b> {row['sum.allrawdata.BIOMASS']}<br>
-                <b>Plot:</b> {row['PLOT']}<br>
-                <b>Location:</b> ({row['LATITUDE']}, {row['LONGITUDE']})
-            """
-            folium.Marker(
-                location=[row['LATITUDE'], row['LONGITUDE']],
-                popup=folium.Popup(popup_content, max_width=300),
-                tooltip=row['GENUS_SPECIES']
-            ).add_to(marker_cluster)
-        
-        title_html = f'''
-            <div style="position: fixed; 
-                        top: 10px; 
-                        left: 50px; 
-                        width: 300px; 
-                        height: 30px; 
-                        z-index:9999; 
-                        background-color: white; 
-                        font-size:16px;
-                        font-weight: bold;
-                        padding: 5px;
-                        border-radius: 5px;
-                        border: 2px solid gray;">
-                    Species Distribution Map ({len(filtered_data)} locations)
-            </div>
-        '''
-        m.get_root().html.add_child(folium.Element(title_html))
-        self._add_title(m, f"Overall Biodiversity Distribution")
-        m.save(output_path)
-        logger.info(f"Simple map saved to {output_path}")
-        return m
-
-    def create_simple_2d_map(self, output_path: str = 'simple_biodiversity_map.html'):
+    def create_climate_biodiversity_map(self, climate_variable: str = 'avg_temp_c', output_path: str = 'climate_biodiversity_map.html'):
 
         m = folium.Map(
             location=[self.default_lat, self.default_lon],
             zoom_start=4,
-            tiles='CartoDB positron',
-            attr='CartoDB'
+            tiles='CartoDB positron'
         )
-
-        # heatmap layer
-        heat_data = [[row['LATITUDE'], row['LONGITUDE'], row['sum.allrawdata.ABUNDANCE']] 
-                    for _, row in self.data_df.iterrows()]
-        
-        plugins.HeatMap(heat_data).add_to(m)
-        
-        self._add_title(m, f"Overall Biodiversity Distribution (Heatmap)")
-        m.save(output_path)
-        logger.info(f"Simple 2D map saved to {output_path}")
-        return m
-
-    def create_prediction_comparison_map(self, model: QuantumModel, years_ahead: int = 5, output_path: str = 'prediction_map.html'):
-                    
-        m = folium.Map(
-            location=[self.default_lat, self.default_lon],
-            zoom_start=4,
-            tiles='CartoDB positron',
-            attr='CartoDB'
-        )
-
-        current_year = self.data_df['YEAR'].max()
-        current_data = self.data_df[self.data_df['YEAR'] == current_year]
         
         # feature groups for toggling
-        current_fg = folium.FeatureGroup(name=f'Current Data ({current_year})')
-        future_fg = folium.FeatureGroup(name=f'Predictions ({current_year + years_ahead})')
+        biodiversity_fg = folium.FeatureGroup(name='Biodiversity')
+        climate_fg = folium.FeatureGroup(name='Climate Data')
         
-        # current data points
-        for _, row in current_data.iterrows():
+
+        heat_data = [[row['LATITUDE'], row['LONGITUDE'], row['sum.allrawdata.ABUNDANCE']] 
+                    for _, row in self.data_df.iterrows()]
+        plugins.HeatMap(heat_data, name='Biodiversity').add_to(biodiversity_fg)
+        
+
+        climate_data = [[row['LATITUDE'], row['LONGITUDE'], row[climate_variable]] 
+                       for _, row in self.data_df.iterrows() if pd.notna(row[climate_variable])]
+        
+
+        climate_values = [d[2] for d in climate_data]
+        colormap = cm.LinearColormap(
+            colors=['blue', 'yellow', 'red'],
+            vmin=min(climate_values),
+            vmax=max(climate_values)
+        )
+        
+        for point in climate_data:
             folium.CircleMarker(
-                location=[row['LATITUDE'], row['LONGITUDE']],
-                radius=np.sqrt(row['sum.allrawdata.ABUNDANCE'])/2,
-                color='blue',
-                popup=f"Current Abundance: {row['sum.allrawdata.ABUNDANCE']:.2f}",
+                location=[point[0], point[1]],
+                radius=8,
+                color=None,
                 fill=True,
-                fill_opacity=0.7
-            ).add_to(current_fg)
+                fill_color=colormap(point[2]),
+                fill_opacity=0.6,
+                popup=f"{climate_variable}: {point[2]:.1f}"
+            ).add_to(climate_fg)
         
-        lat_range = np.linspace(self.data_df['LATITUDE'].min(), self.data_df['LATITUDE'].max(), 20)
-        lon_range = np.linspace(self.data_df['LONGITUDE'].min(), self.data_df['LONGITUDE'].max(), 20)
-        
-        for lat in lat_range:
-            for lon in lon_range:
-                try:
-                    predicted_abundance = model.predict_future_abundance([lat, lon], years_ahead)
-                    if predicted_abundance > 0:  # show positive predictions - might split out negative ones and display too
-                        folium.CircleMarker(
-                            location=[lat, lon],
-                            radius=np.sqrt(predicted_abundance)/2,
-                            color='red',
-                            popup=f"Predicted Abundance: {predicted_abundance:.2f}",
-                            fill=True,
-                            fill_opacity=0.5
-                        ).add_to(future_fg)
-                except Exception as e:
-                    logger.warning(f"Prediction failed for location [{lat}, {lon}]: {str(e)}")
-        
-        current_fg.add_to(m)
-        future_fg.add_to(m)
+        # layers
+        biodiversity_fg.add_to(m)
+        climate_fg.add_to(m)
+        colormap.add_to(m)
         
         folium.LayerControl().add_to(m)
         
-        self._add_title(m, f"Current vs Predicted Biodiversity ({years_ahead} years ahead)")
+        self._add_title(m, f"Biodiversity and {climate_variable} Distribution")
         m.save(output_path)
-        logger.info(f"Prediction comparison map saved to {output_path}")
         return m
 
+    def create_future_timeline_map(self, model: QuantumModel, years_ahead: int = 5, prediction_grid_size: int = 20, output_path: str = 'future_biodiversity_map.html'):
 
-    def create_time_slider_map(self, output_path: str = 'basic_biodiversity_map.html'):
-
-        years = sorted(self.data_df['YEAR'].unique())
-        
         m = folium.Map(
             location=[self.default_lat, self.default_lon],
             zoom_start=4,
-            tiles='CartoDB positron',
-            attr='CartoDB'
+            tiles='CartoDB positron'
+        )
+        
+        # prep existing data
+        years = sorted(self.data_df['YEAR'].unique())
+        current_year = max(years)
+        future_years = range(current_year + 1, current_year + years_ahead + 1)
+        all_years = years + list(future_years)
+        
+        # prediction grid
+        lat_range = np.linspace(
+            self.data_df['LATITUDE'].min(), 
+            self.data_df['LATITUDE'].max(), 
+            prediction_grid_size
+        )
+        lon_range = np.linspace(
+            self.data_df['LONGITUDE'].min(), 
+            self.data_df['LONGITUDE'].max(), 
+            prediction_grid_size
         )
         
         features = []
         style_dict = {}
         
-        # group data by year -> features for each location
+        # historical data points
+        logger.info("Processing historical data points...")
         for year in years:
             year_data = self.data_df[self.data_df['YEAR'] == year]
             
             for idx, row in year_data.iterrows():
-                feature_id = f"location_{idx}"
+                feature_id = f"historical_{idx}"
                 
                 if feature_id not in [f['id'] for f in features]:
                     feature = {
@@ -383,45 +280,144 @@ class BiodiversityMap:
                             'coordinates': [row['LONGITUDE'], row['LATITUDE']]
                         },
                         'properties': {
-                            'times': []
+                            'times': [str(year)],
+                            'popup': (f"Historical Data<br>"
+                                    f"Year: {year}<br>"
+                                    f"Abundance: {row['sum.allrawdata.ABUNDANCE']:.2f}")
                         }
                     }
                     features.append(feature)
                 
-                if feature_id not in style_dict:
-                    style_dict[feature_id] = {}
-                
-                # colour based on abundance
                 abundance = row['sum.allrawdata.ABUNDANCE']
-                opacity = min(0.8, abundance / self.data_df['sum.allrawdata.ABUNDANCE'].max())
+                max_abundance = self.data_df['sum.allrawdata.ABUNDANCE'].max()
+                opacity = min(0.8, abundance / max_abundance)
                 
-                style_dict[feature_id][str(year)] = {
-                    'color': 'red',
-                    'fillColor': 'red',
-                    'fillOpacity': opacity,
-                    'radius': np.sqrt(abundance)/2,
-                    'weight': 1
+                style_dict[feature_id] = {
+                    str(year): {
+                        'color': 'blue',
+                        'fillColor': 'blue',
+                        'fillOpacity': opacity,
+                        'radius': np.sqrt(abundance)/2,
+                        'weight': 1
+                    }
                 }
-                
-                for feature in features:
-                    if feature['id'] == feature_id:
-                        feature['properties']['times'].append(str(year))
-                        break
         
+        logger.info("Generating future predictions...")
+        prediction_counter = 0
+        for lat in lat_range:
+            for lon in lon_range:
+                feature_id = f"prediction_{prediction_counter}"
+                prediction_counter += 1
+                
+                # climate data for this location - or as close as possible
+                nearest_weather = self._get_nearest_weather_data(lat, lon)
+                
+                try:
+                    # predictions for each future year
+                    predictions = {}
+                    for year in future_years:
+                        predicted_abundance = model.predict_future_abundance(
+                            location=[lat, lon],
+                            years_ahead=year - current_year,
+                            climate_data=nearest_weather
+                        )
+                                                
+                        predictions[year] = predicted_abundance
+                    
+                    if predictions:  # create if we have valid predictions
+                        feature = {
+                            'type': 'Feature',
+                            'id': feature_id,
+                            'geometry': {
+                                'type': 'Point',
+                                'coordinates': [lon, lat]
+                            },
+                            'properties': {
+                                'times': [str(year) for year in predictions.keys()],
+                                'popup': 'Predicted Data<br>' + '<br>'.join(
+                                    f"Year {year}: {abundance:.2f}"
+                                    for year, abundance in predictions.items()
+                                )
+                            }
+                        }
+                        features.append(feature)
+                        
+                        style_dict[feature_id] = {
+                            str(year): {
+                                'color': 'red',
+                                'fillColor': 'red',
+                                'fillOpacity': min(0.8, abundance / max_abundance),
+                                'radius': np.sqrt(abundance)/2,
+                                'weight': 1
+                            }
+                            for year, abundance in predictions.items()
+                        }
+                
+                except Exception as e:
+                    logger.warning(f"Prediction failed for location [{lat}, {lon}]: {str(e)}")
+        
+        logger.info("Creating time slider visualisation...")
         geojson_data = {
             'type': 'FeatureCollection',
             'features': features
         }
         
-        plugins.TimeSliderChoropleth(
+        time_slider = TimestampedGeoJson(
             geojson_data,
-            styledict=style_dict
-        ).add_to(m)
-                
-        self._add_title(m, "Biodiversity Distribution Over Time")
+            period='P1Y',  # one year per step - may scale thid depending on accuracy
+            add_last_point=False,
+            auto_play=True,
+            loop=True,
+            max_speed=1,
+            loop_button=True,
+            date_options='YYYY',
+            time_slider_drag_update=True,
+            duration='P1Y'
+        )
+        
+        # Add legend
+        legend_html = """
+        <div style="position: fixed; 
+                    bottom: 50px; 
+                    right: 50px; 
+                    z-index: 1000; 
+                    background-color: white;
+                    padding: 10px;
+                    border-radius: 5px;
+                    border: 2px solid gray;">
+            <p><strong>Legend</strong></p>
+            <p><span style="color: blue;">●</span> Historical Data</p>
+            <p><span style="color: red;">●</span> Predicted Data</p>
+        </div>
+        """
+        m.get_root().html.add_child(folium.Element(legend_html))
+        
+        time_slider.add_to(m)
+        self._add_title(m, f"Biodiversity Distribution: Historical to {max(future_years)}")
+        
         m.save(output_path)
-        logger.info(f"Time slider map saved to {output_path}")
+        logger.info(f"Future timeline map saved to {output_path}")
         return m
+    
+    def _get_nearest_weather_data(self, lat: float, lon: float) -> dict:
+
+        if not hasattr(self, 'data_df') or 'avg_temp_c' not in self.data_df.columns:
+            return {}
+            
+        # distances to all weather stations - pythag dist
+        distances = np.sqrt(
+            (self.data_df['LATITUDE'] - lat)**2 + 
+            (self.data_df['LONGITUDE'] - lon)**2
+        )
+        
+        # nearest station's data
+        nearest_idx = distances.argmin()
+        nearest_row = self.data_df.iloc[nearest_idx]
+        
+        return {
+            'temperature': nearest_row.get('avg_temp_c', None),
+            'precipitation': nearest_row.get('precipitation_mm', None)
+        }
 
     @staticmethod
     def _add_title(m: folium.Map, title: str):
@@ -444,11 +440,50 @@ class BiodiversityMap:
         m.get_root().html.add_child(folium.Element(title_html))
 
 
-def within_radius(row, weather_df, radius_km=50):
 
-    bio_point = (row['LATITUDE'], row['LONGITUDE'])
-    weather_points = weather_df[['latitude', 'longitude']].values
-    return any(geodesic(bio_point, tuple(wp)).km <= radius_km for wp in weather_points)
+def distance(lat1: np.ndarray, lon1: np.ndarray, lat2: np.ndarray, lon2: np.ndarray) -> np.ndarray:
+
+    # https://stackoverflow.com/a/4913653
+    R = 6371  # earth's radius km
+    lat1, lon1, lat2, lon2 = map(np.radians, [lat1, lon1, lat2, lon2])
+    
+    dlat = lat2[:, np.newaxis] - lat1
+    dlon = lon2[:, np.newaxis] - lon1
+    
+    a = np.sin(dlat/2.0)**2 + np.cos(lat1) * np.cos(lat2[:, np.newaxis]) * np.sin(dlon/2.0)**2
+    c = 2 * np.arcsin(np.sqrt(a))
+    return R * c
+
+def find_nearby_stations(bio_df: pd.DataFrame, weather_df: pd.DataFrame, radius_km: float = 500) -> Tuple[pd.DataFrame, pd.DataFrame]:
+
+    bio_coords = bio_df[['LATITUDE', 'LONGITUDE']].values
+    weather_coords = weather_df[['latitude', 'longitude']].values
+    
+    distances = distance(bio_coords[:, 0], bio_coords[:, 1],weather_coords[:, 0], weather_coords[:, 1])
+    
+    matches = distances <= radius_km
+    
+    # mapping between biodiversity locations and weather stations
+    bio_indices, weather_indices = np.where(matches)
+    
+    merged_data = []
+    for bio_idx, weather_idx in zip(bio_indices, weather_indices):
+        bio_row = bio_df.iloc[bio_idx]
+        weather_row = weather_df.iloc[weather_idx]
+        
+        merged_row = {
+            **bio_row.to_dict(),
+            'station_id': weather_row['station_id'],
+            'avg_temp_c': weather_row['avg_temp_c'],
+            'min_temp_c': weather_row['min_temp_c'],
+            'max_temp_c': weather_row['max_temp_c'],
+            'precipitation_mm': weather_row['precipitation_mm'],
+            'station_latitude': weather_row['latitude'],
+            'station_longitude': weather_row['longitude']
+        }
+        merged_data.append(merged_row)
+    
+    return pd.DataFrame(merged_data)
 
 
 def main():
@@ -456,15 +491,6 @@ def main():
     data_path = "BioTIMEQuery_24_06_2021.csv"
     model_path = "biodiversity_model.pkl"    
     number_of_years = 1 # edit this if it is taking too long
-    
-    ## clean up all data sets - remove rows that would have NaNs on the joining fields i.e. lat/long is nan
-    ## merge the data sets on lat/long - round for now
-    ## either choose to filter down to one species - maybe for testing the pipeline/full path
-    ## v2 -> sum across species per rounded lat/long
-    ## fix the lat/long map - currently they are being centered in one area
-    ## generate all visualisations separately
-    ## combine prediction map with timeline slider
-    ## generate a plot of actual vs predicted based on validation data set - graph to show performance
 
 
     try:
@@ -494,68 +520,32 @@ def main():
         logger.info(f"number of rows to be processed {len(data_df.index)}")
 
 
-        # spatial merging with just rounding - if geodesic/radius taking too long
-        data_df['rounded_lat'] = data_df['LATITUDE'].round(2)
-        data_df['rounded_lon'] = data_df['LONGITUDE'].round(2)
-        weather_df['rounded_lat'] = weather_df['latitude'].round(2)
-        weather_df['rounded_lon'] = weather_df['longitude'].round(2)
-
-        merged_df = pd.merge(
-            data_df, weather_df, 
-            left_on=['rounded_lat', 'rounded_lon'], 
-            right_on=['rounded_lat', 'rounded_lon'], 
-            how='left'
-        )
-
-        # merged_df = pd.DataFrame()
-        # for _, row in data_df.iterrows():
-        #     if within_radius(row, weather_df):
-        #         merged_df = merged_df.append(row)
+        merged_df = find_nearby_stations(data_df, weather_df)
+        logger.info(f"Merged dataset contains {len(merged_df)} records")
         
-        print(f"Merged dataset contains {len(merged_df)} records")
-        print(merged_df.head())
-
+        # create maps with climate data - avg temp and precipitation, could also do min/max temp or windspeed? 
+        # depending on how much data we have
         bio_map = BiodiversityMap(merged_df)
-
-        # basic map
-        bio_map.create_map()
-        logger.info("timeline map created")
-
-        # basic time slider map
-        bio_map.create_time_slider_map('biodiversity_timeline_map.html')
-        logger.info("timeline map created")
+        bio_map.create_climate_biodiversity_map(climate_variable='avg_temp_c', output_path='temperature_biodiversity_map.html')
+        bio_map.create_climate_biodiversity_map(climate_variable='precipitation_mm', output_path='precipitation_biodiversity_map.html')
         
-        # simple 2D heatmap for abundance
-        bio_map.create_simple_2d_map('biodiversity_heatmap.html')
-        logger.info("heatmap created")
-        
+        # train quantum model with climate data
         if QuantumModel.model_already_exists(model_path):
-            logger.info("loading existing model...")
             model = QuantumModel.load_model(model_path)
         else:
-            logger.info("training new model...")
             model = QuantumModel()
-            X_scaled, y_scaled = model.prepare_data(data_df, include_climate=True)
-            
-            # split data
+            X_scaled, y_scaled = model.prepare_data(merged_df)
             X_train, X_temp, y_train, y_temp = train_test_split(X_scaled, y_scaled, test_size=0.3, random_state=123)
             X_val, X_test, y_val, y_test = train_test_split(X_temp, y_temp, test_size=0.5, random_state=123)
-            
-            # train model
             weights, losses = model.train(X_train, y_train)
             model.save_model(model_path)
-            logger.info("model trained and saved successfully")
         
-        # # test prediction
-        # location = [47.4, -95.12]
-        # years_ahead = 5
-        # prediction = model.predict_future_abundance(location, years_ahead)
-        # logger.info(f"Predicted abundance in {years_ahead} years at location "
-        #            f"{location}: {prediction:.2f}")
-
-        #  # prediction comparison map
-        # bio_map.create_prediction_comparison_map(model, years_ahead=5, output_path='biodiversity_prediction_map.html')
-        # logger.info("comparison map created")
+        bio_map.create_future_timeline_map(
+            model=model,
+            years_ahead=5,
+            prediction_grid_size=20,
+            output_path='future_biodiversity_timeline.html'
+        )
         
     except Exception as e:
         logger.error(f"An error occurred, don't panic: {str(e)}")
