@@ -539,6 +539,7 @@ def main():
             X_val, X_test, y_val, y_test = train_test_split(X_temp, y_temp, test_size=0.5, random_state=123)
             weights, losses = model.train(X_train, y_train)
             model.save_model(model_path)
+        .
         
         bio_map.create_future_timeline_map(
             model=model,
