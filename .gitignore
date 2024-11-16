@@ -3,6 +3,9 @@
 *.zip
 *.parquet
 
+# the maps are pretty big
+*.html
+
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

@@ -3,6 +3,11 @@ import pandas as pd
 import pennylane as qml
 import pickle
 import folium
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error
+from sklearn.metrics import confusion_matrix, classification_report
+from sklearn.neighbors import BallTree
 from folium import plugins
 from folium.plugins import TimestampedGeoJson, MarkerCluster
 import branca.colormap as cm
@@ -69,7 +74,7 @@ class QuantumModel:
 
         features = [
             'LATITUDE', 'LONGITUDE', 'YEAR',
-            'avg_temp_c', 'min_temp_c', 'max_temp_c', 'precipitation_mm'
+            'avg_temp_c', 'precipitation_mm'
         ]
         
         processed_data = data_df[features + ['sum.allrawdata.ABUNDANCE']].copy()
@@ -440,58 +445,182 @@ class BiodiversityMap:
         m.get_root().html.add_child(folium.Element(title_html))
 
 
-
-def distance(lat1: np.ndarray, lon1: np.ndarray, lat2: np.ndarray, lon2: np.ndarray) -> np.ndarray:
-
-    # https://stackoverflow.com/a/4913653
-    R = 6371  # earth's radius km
-    lat1, lon1, lat2, lon2 = map(np.radians, [lat1, lon1, lat2, lon2])
-    
-    dlat = lat2[:, np.newaxis] - lat1
-    dlon = lon2[:, np.newaxis] - lon1
-    
-    a = np.sin(dlat/2.0)**2 + np.cos(lat1) * np.cos(lat2[:, np.newaxis]) * np.sin(dlon/2.0)**2
-    c = 2 * np.arcsin(np.sqrt(a))
-    return R * c
-
-def find_nearby_stations(bio_df: pd.DataFrame, weather_df: pd.DataFrame, radius_km: float = 500) -> Tuple[pd.DataFrame, pd.DataFrame]:
-
-    bio_coords = bio_df[['LATITUDE', 'LONGITUDE']].values
-    weather_coords = weather_df[['latitude', 'longitude']].values
-    
-    distances = distance(bio_coords[:, 0], bio_coords[:, 1],weather_coords[:, 0], weather_coords[:, 1])
-    
-    matches = distances <= radius_km
-    
-    # mapping between biodiversity locations and weather stations
-    bio_indices, weather_indices = np.where(matches)
-    
-    merged_data = []
-    for bio_idx, weather_idx in zip(bio_indices, weather_indices):
-        bio_row = bio_df.iloc[bio_idx]
-        weather_row = weather_df.iloc[weather_idx]
+class ModelEvaluator:
+    def __init__(self, model: QuantumModel):
+        self.model = model
+        plt.style.use('seaborn')
         
-        merged_row = {
-            **bio_row.to_dict(),
-            'station_id': weather_row['station_id'],
-            'avg_temp_c': weather_row['avg_temp_c'],
-            'min_temp_c': weather_row['min_temp_c'],
-            'max_temp_c': weather_row['max_temp_c'],
-            'precipitation_mm': weather_row['precipitation_mm'],
-            'station_latitude': weather_row['latitude'],
-            'station_longitude': weather_row['longitude']
+    def evaluate_regression_metrics(self, X_true: np.ndarray, y_true: np.ndarray) -> Dict[str, float]:
+        # predictions
+        y_pred = self.model.predict(X_true)
+        
+        # original scale
+        y_true_orig = self.model.target_scaler.inverse_transform(y_true)
+        y_pred_orig = self.model.target_scaler.inverse_transform(y_pred.reshape(-1, 1))
+        
+        metrics = {
+            'mse': mean_squared_error(y_true_orig, y_pred_orig),
+            'rmse': np.sqrt(mean_squared_error(y_true_orig, y_pred_orig)),
+            'mae': mean_absolute_error(y_true_orig, y_pred_orig),
+            'r2': r2_score(y_true_orig, y_pred_orig)
         }
-        merged_data.append(merged_row)
+        
+        return metrics
     
-    return pd.DataFrame(merged_data)
+    def create_performance_plots(self, X_test: np.ndarray, y_test: np.ndarray, 
+                               year: int, output_dir: str = './') -> None:
 
+        y_pred = self.model.predict(X_test)
+        
+        # transform to original scale
+        y_test_orig = self.model.target_scaler.inverse_transform(y_test)
+        y_pred_orig = self.model.target_scaler.inverse_transform(y_pred.reshape(-1, 1))
+        
+        fig = plt.figure(figsize=(15, 10))
+        gs = fig.add_gridspec(2, 2)
+        
+        # predicted vs actual values
+        ax1 = fig.add_subplot(gs[0, 0])
+        self._plot_prediction_scatter(ax1, y_test_orig, y_pred_orig)
+                
+        # distribution plot
+        ax3 = fig.add_subplot(gs[1, 0])
+        self._plot_distributions(ax3, y_test_orig, y_pred_orig)
+        
+        # errors
+        ax4 = fig.add_subplot(gs[1, 1])
+        self._plot_error_histogram(ax4, y_test_orig, y_pred_orig)
+        
+        fig.suptitle(f'Model Performance Evaluation - Year {year}', fontsize=16, y=1.05)
+        
+
+        plt.tight_layout()
+        plt.savefig(f'{output_dir}/model_performance_{year}.png', bbox_inches='tight', dpi=300)
+        plt.close()
+        
+        self._create_faceted_performance_plot(X_test, y_test_orig, y_pred_orig, year, output_dir)
+    
+    def _plot_prediction_scatter(self, ax: plt.Axes, y_true: np.ndarray, y_pred: np.ndarray) -> None:
+  
+        ax.scatter(y_true, y_pred, alpha=0.5)
+        
+        lims = [
+            min(min(y_true), min(y_pred)),
+            max(max(y_true), max(y_pred))
+        ]
+        ax.plot(lims, lims, 'r--', label='Perfect Prediction')
+        
+        ax.set_xlabel('Actual Abundance')
+        ax.set_ylabel('Predicted Abundance')
+        ax.set_title('Predicted vs Actual Values')
+        ax.legend()
+        
+        # Add R² value
+        r2 = r2_score(y_true, y_pred)
+        ax.text(0.05, 0.95, f'R² = {r2:.3f}', transform=ax.transAxes, bbox=dict(facecolor='white', alpha=0.8))
+ 
+    def _plot_distributions(self, ax: plt.Axes, y_true: np.ndarray, y_pred: np.ndarray) -> None:
+
+        sns.kdeplot(data=y_true.flatten(), label='Actual', ax=ax)
+        sns.kdeplot(data=y_pred.flatten(), label='Predicted', ax=ax)
+        
+        ax.set_xlabel('Abundance')
+        ax.set_ylabel('Density')
+        ax.set_title('Distribution of Actual vs Predicted Values')
+        ax.legend()
+    
+    def _plot_error_histogram(self, ax: plt.Axes, y_true: np.ndarray, y_pred: np.ndarray) -> None:
+
+        errors = y_pred - y_true
+        sns.histplot(data=errors.flatten(), bins=30, ax=ax)
+        
+        ax.set_xlabel('Prediction Error')
+        ax.set_ylabel('Count')
+        ax.set_title('Distribution of Prediction Errors')
+        
+        mean_error = np.mean(errors)
+        std_error = np.std(errors)
+        ax.text(0.05, 0.95, f'Mean Error = {mean_error:.3f}\nStd Error = {std_error:.3f}', transform=ax.transAxes, bbox=dict(facecolor='white', alpha=0.8))
+    
+    def _create_faceted_performance_plot(self, X_test: np.ndarray, y_true: np.ndarray, y_pred: np.ndarray, year: int, output_dir: str) -> None:
+
+        df = pd.DataFrame({
+            'Actual': y_true.flatten(),
+            'Predicted': y_pred.flatten(),
+            'Error': y_pred.flatten() - y_true.flatten(),
+            'Latitude': self.model.feature_scaler.inverse_transform(X_test)[:, 0],
+            'Longitude': self.model.feature_scaler.inverse_transform(X_test)[:, 1]
+        })
+        
+        g = sns.FacetGrid(df, cols=['Error', 'Predicted'], row_height=6, aspect=1.5)
+        g.map_dataframe(sns.scatterplot, x='Longitude', y='Latitude', hue='Actual', size='Actual', sizes=(20, 200), alpha=0.6)
+        g.fig.suptitle(f'Model Performance for Location - Year {year}', y=1.05, fontsize=16)
+        
+        norm = plt.Normalize(df['Actual'].min(), df['Actual'].max())
+        sm = plt.cm.ScalarMappable(cmap="viridis", norm=norm)
+        sm.set_array([])
+        
+        for ax in g.axes.flat:
+            plt.colorbar(sm, ax=ax, label='Actual Abundance')
+        
+        plt.tight_layout()
+        plt.savefig(f'{output_dir}/spatial_performance_{year}.png', bbox_inches='tight', dpi=300)
+        plt.close()
+
+def get_nearest_stations(bio_df: pd.DataFrame, weather_df: pd.DataFrame, k: int = 1) -> pd.DataFrame:
+
+    # haversine was taking too long and wanted 24 tb of disk space so trying sklearn BallTree for approx nearest station
+
+    weather_coords = np.radians(weather_df[['latitude', 'longitude']].values)
+    tree = BallTree(weather_coords, metric='haversine')
+    
+    # convert coordinates to radians
+    bio_coords = np.radians(bio_df[['LATITUDE', 'LONGITUDE']].values)
+
+    # k nearest neighbors for each location
+    distances, indices = tree.query(bio_coords, k=k)
+    
+    # convert to km
+    distances_km = distances * 6371.0 # radius of earth in km
+    
+    merged_records = []
+    
+    for i in range(len(bio_df)):
+        bio_row = bio_df.iloc[i]
+        
+        for j in range(k):
+            weather_row = weather_df.iloc[indices[i, j]]
+            
+            merged_record = {
+                **bio_row.to_dict(),
+                'station_id': weather_row['station_id'],
+                'station_distance_km': distances_km[i, j],
+                'station_latitude': weather_row['latitude'],
+                'station_longitude': weather_row['longitude'],
+                'avg_temp_c': weather_row['avg_temp_c'],
+                'precipitation_mm': weather_row['precipitation_mm'],
+            }
+            merged_records.append(merged_record)
+    
+    result_df = pd.DataFrame(merged_records)
+    
+    return result_df
+
+
+def print_performance_summary(metrics: Dict[str, float]) -> None:
+    print("\nModel Performance Summary")
+    print("========================")
+    print(f"R² Score: {metrics['r2']:.3f}")
+    print(f"RMSE: {metrics['rmse']:.3f}")
+    print(f"MAE: {metrics['mae']:.3f}")
+    print(f"MSE: {metrics['mse']:.3f}")
 
 def main():
 
     data_path = "BioTIMEQuery_24_06_2021.csv"
     model_path = "biodiversity_model.pkl"    
-    number_of_years = 1 # edit this if it is taking too long
-
+    #number_of_years = 1 # edit this if it is taking too long
+    year = 2012
 
     try:
         # prevent dtype warning - probably should set to true on your machine Winnie
@@ -514,20 +643,25 @@ def main():
         data_df = data_df.dropna(subset=['LATITUDE', 'LONGITUDE'])
         weather_df = weather_df.dropna(subset=['latitude', 'longitude'])
         
-        max_year = data_df['YEAR'].max()
-        data_df = data_df[data_df['YEAR'] == 2012]
-        logger.info(f"filtered data to last {number_of_years} years from {max_year}")
-        logger.info(f"number of rows to be processed {len(data_df.index)}")
+        #max_year = data_df['YEAR'].max()
+        data_df = data_df[data_df['YEAR'] == year]
+        #logger.info(f"filtered data to last {number_of_years} years from {max_year}")
+        logger.info(f"number of biodata rows to be processed {len(data_df.index)}")
 
+        if not pd.api.types.is_datetime64_any_dtype(weather_df['date']):
+            weather_df['date'] = pd.to_datetime(weather_df['date'])
+        
+        weather_df = weather_df[weather_df['date'].dt.year == year]
+        logger.info(f"number of weather rows to be processed {len(weather_df.index)}")
 
-        merged_df = find_nearby_stations(data_df, weather_df)
+        merged_df = get_nearest_stations(data_df, weather_df)
         logger.info(f"Merged dataset contains {len(merged_df)} records")
         
         # create maps with climate data - avg temp and precipitation, could also do min/max temp or windspeed? 
         # depending on how much data we have
         bio_map = BiodiversityMap(merged_df)
-        bio_map.create_climate_biodiversity_map(climate_variable='avg_temp_c', output_path='temperature_biodiversity_map.html')
-        bio_map.create_climate_biodiversity_map(climate_variable='precipitation_mm', output_path='precipitation_biodiversity_map.html')
+        # bio_map.create_climate_biodiversity_map(climate_variable='avg_temp_c', output_path='temperature_biodiversity_map.html')
+        # bio_map.create_climate_biodiversity_map(climate_variable='precipitation_mm', output_path='precipitation_biodiversity_map.html')
         
         # train quantum model with climate data
         if QuantumModel.model_already_exists(model_path):
@@ -539,13 +673,24 @@ def main():
             X_val, X_test, y_val, y_test = train_test_split(X_temp, y_temp, test_size=0.5, random_state=123)
             weights, losses = model.train(X_train, y_train)
             model.save_model(model_path)
-        .
-        
+
         bio_map.create_future_timeline_map(
             model=model,
             years_ahead=5,
             prediction_grid_size=20,
-            output_path='future_biodiversity_timeline.html'
+            output_path='future_biodiversity_timeline.html')
+
+        evaluator = ModelEvaluator(model)
+    
+        metrics = evaluator.evaluate_regression_metrics(X_test, y_test)
+        print_performance_summary(metrics)
+        
+        # plot performance
+        evaluator.create_performance_plots(
+            X_test=X_test,
+            y_test=y_test,
+            year=year,
+            output_dir='./model_evaluation'
         )
         
     except Exception as e:
