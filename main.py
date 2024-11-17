@@ -664,15 +664,20 @@ def main():
         # bio_map.create_climate_biodiversity_map(climate_variable='precipitation_mm', output_path='precipitation_biodiversity_map.html')
         
         # train quantum model with climate data
+        model = QuantumModel()
+        
+        X_scaled, y_scaled = model.prepare_data(merged_df)
+        X_train, X_temp, y_train, y_temp = train_test_split(X_scaled, y_scaled, test_size=0.3, random_state=123)
+        X_val, X_test, y_val, y_test = train_test_split(X_temp, y_temp, test_size=0.5, random_state=123)
         if QuantumModel.model_already_exists(model_path):
             model = QuantumModel.load_model(model_path)
+            logger.info(f"model loaded from file")
         else:
-            model = QuantumModel()
-            X_scaled, y_scaled = model.prepare_data(merged_df)
-            X_train, X_temp, y_train, y_temp = train_test_split(X_scaled, y_scaled, test_size=0.3, random_state=123)
-            X_val, X_test, y_val, y_test = train_test_split(X_temp, y_temp, test_size=0.5, random_state=123)
+            logger.info(f"model being trained")
             weights, losses = model.train(X_train, y_train)
             model.save_model(model_path)
+            model.save_model(model_path)
+            logger.info(f"model saved to file")
 
         bio_map.create_future_timeline_map(
             model=model,
