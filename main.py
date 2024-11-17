@@ -591,8 +591,8 @@ def main():
         # create maps with climate data - avg temp and precipitation, could also do min/max temp or windspeed? 
         # depending on how much data we have
         bio_map = BiodiversityMap(merged_df)
-        # bio_map.create_climate_biodiversity_map(climate_variable='avg_temp_c', output_path='temperature_biodiversity_map.html')
-        # bio_map.create_climate_biodiversity_map(climate_variable='precipitation_mm', output_path='precipitation_biodiversity_map.html')
+        bio_map.create_climate_biodiversity_map(climate_variable='avg_temp_c', output_path='temperature_biodiversity_map.html')
+        bio_map.create_climate_biodiversity_map(climate_variable='precipitation_mm', output_path='precipitation_biodiversity_map.html')
         
         # train quantum model with climate data
         model = QuantumModel()
@@ -610,11 +610,11 @@ def main():
             model.save_model(model_path)
             logger.info(f"model saved to file")
 
-        # bio_map.create_future_timeline_map(
-        #     model=model,
-        #     years_ahead=5,
-        #     prediction_grid_size=20,
-        #     output_path='future_biodiversity_timeline.html')
+        bio_map.create_future_timeline_map(
+            model=model,
+            years_ahead=5,
+            prediction_grid_size=20,
+            output_path='future_biodiversity_timeline.html')
 
         evaluator = ModelEvaluator(model)
     
