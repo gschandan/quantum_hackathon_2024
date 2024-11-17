@@ -3,7 +3,9 @@ import pandas as pd
 import pennylane as qml
 import pickle
 import folium
+import geopandas as gpd
 import matplotlib.pyplot as plt
+from shapely.geometry import Point
 import seaborn as sns
 from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error
 from sklearn.metrics import confusion_matrix, classification_report
@@ -448,7 +450,6 @@ class BiodiversityMap:
 class ModelEvaluator:
     def __init__(self, model: QuantumModel):
         self.model = model
-        plt.style.use('seaborn')
         
     def evaluate_regression_metrics(self, X_true: np.ndarray, y_true: np.ndarray) -> Dict[str, float]:
         # predictions
@@ -467,8 +468,7 @@ class ModelEvaluator:
         
         return metrics
     
-    def create_performance_plots(self, X_test: np.ndarray, y_test: np.ndarray, 
-                               year: int, output_dir: str = './') -> None:
+    def create_performance_plot(self, X_test: np.ndarray, y_test: np.ndarray, year: int, output_dir: str = './') -> None:
 
         y_pred = self.model.predict(X_test)
         
@@ -476,96 +476,27 @@ class ModelEvaluator:
         y_test_orig = self.model.target_scaler.inverse_transform(y_test)
         y_pred_orig = self.model.target_scaler.inverse_transform(y_pred.reshape(-1, 1))
         
-        fig = plt.figure(figsize=(15, 10))
-        gs = fig.add_gridspec(2, 2)
-        
-        # predicted vs actual values
-        ax1 = fig.add_subplot(gs[0, 0])
-        self._plot_prediction_scatter(ax1, y_test_orig, y_pred_orig)
-                
-        # distribution plot
-        ax3 = fig.add_subplot(gs[1, 0])
-        self._plot_distributions(ax3, y_test_orig, y_pred_orig)
-        
-        # errors
-        ax4 = fig.add_subplot(gs[1, 1])
-        self._plot_error_histogram(ax4, y_test_orig, y_pred_orig)
-        
-        fig.suptitle(f'Model Performance Evaluation - Year {year}', fontsize=16, y=1.05)
-        
-
-        plt.tight_layout()
-        plt.savefig(f'{output_dir}/model_performance_{year}.png', bbox_inches='tight', dpi=300)
-        plt.close()
-        
-        self._create_faceted_performance_plot(X_test, y_test_orig, y_pred_orig, year, output_dir)
-    
-    def _plot_prediction_scatter(self, ax: plt.Axes, y_true: np.ndarray, y_pred: np.ndarray) -> None:
-  
-        ax.scatter(y_true, y_pred, alpha=0.5)
-        
-        lims = [
-            min(min(y_true), min(y_pred)),
-            max(max(y_true), max(y_pred))
-        ]
-        ax.plot(lims, lims, 'r--', label='Perfect Prediction')
-        
-        ax.set_xlabel('Actual Abundance')
-        ax.set_ylabel('Predicted Abundance')
-        ax.set_title('Predicted vs Actual Values')
-        ax.legend()
-        
-        # Add R² value
-        r2 = r2_score(y_true, y_pred)
-        ax.text(0.05, 0.95, f'R² = {r2:.3f}', transform=ax.transAxes, bbox=dict(facecolor='white', alpha=0.8))
- 
-    def _plot_distributions(self, ax: plt.Axes, y_true: np.ndarray, y_pred: np.ndarray) -> None:
-
-        sns.kdeplot(data=y_true.flatten(), label='Actual', ax=ax)
-        sns.kdeplot(data=y_pred.flatten(), label='Predicted', ax=ax)
-        
-        ax.set_xlabel('Abundance')
-        ax.set_ylabel('Density')
-        ax.set_title('Distribution of Actual vs Predicted Values')
-        ax.legend()
-    
-    def _plot_error_histogram(self, ax: plt.Axes, y_true: np.ndarray, y_pred: np.ndarray) -> None:
-
-        errors = y_pred - y_true
-        sns.histplot(data=errors.flatten(), bins=30, ax=ax)
-        
-        ax.set_xlabel('Prediction Error')
-        ax.set_ylabel('Count')
-        ax.set_title('Distribution of Prediction Errors')
-        
-        mean_error = np.mean(errors)
-        std_error = np.std(errors)
-        ax.text(0.05, 0.95, f'Mean Error = {mean_error:.3f}\nStd Error = {std_error:.3f}', transform=ax.transAxes, bbox=dict(facecolor='white', alpha=0.8))
-    
-    def _create_faceted_performance_plot(self, X_test: np.ndarray, y_true: np.ndarray, y_pred: np.ndarray, year: int, output_dir: str) -> None:
+        errors = y_pred_orig.flatten() - y_test_orig.flatten()
 
         df = pd.DataFrame({
-            'Actual': y_true.flatten(),
-            'Predicted': y_pred.flatten(),
-            'Error': y_pred.flatten() - y_true.flatten(),
             'Latitude': self.model.feature_scaler.inverse_transform(X_test)[:, 0],
-            'Longitude': self.model.feature_scaler.inverse_transform(X_test)[:, 1]
+            'Longitude': self.model.feature_scaler.inverse_transform(X_test)[:, 1],
+            'Error': errors
         })
-        
-        g = sns.FacetGrid(df, cols=['Error', 'Predicted'], row_height=6, aspect=1.5)
-        g.map_dataframe(sns.scatterplot, x='Longitude', y='Latitude', hue='Actual', size='Actual', sizes=(20, 200), alpha=0.6)
-        g.fig.suptitle(f'Model Performance for Location - Year {year}', y=1.05, fontsize=16)
-        
-        norm = plt.Normalize(df['Actual'].min(), df['Actual'].max())
-        sm = plt.cm.ScalarMappable(cmap="viridis", norm=norm)
-        sm.set_array([])
-        
-        for ax in g.axes.flat:
-            plt.colorbar(sm, ax=ax, label='Actual Abundance')
-        
-        plt.tight_layout()
-        plt.savefig(f'{output_dir}/spatial_performance_{year}.png', bbox_inches='tight', dpi=300)
+
+        df['geometry'] = df.apply(lambda row: Point(row['Longitude'], row['Latitude']), axis=1)
+        geo_df = gpd.GeoDataFrame(df, geometry='geometry', crs="EPSG:4326") 
+
+        world = gpd.read_file('./earth/ne_110m_admin_0_countries.shp')
+
+        fig, ax = plt.subplots(figsize=(15, 10))
+        world.boundary.plot(ax=ax, linewidth=1)
+        geo_df.plot(column='Error', ax=ax, legend=True, cmap='coolwarm', markersize=20, legend_kwds={'label': "Prediction Error", 'orientation': "horizontal"})
+
+        plt.title(f'Prediction Error on World Map - Year {year}')
+        plt.savefig(f'{output_dir}/error_heatmap_{year}.png', bbox_inches='tight', dpi=300)
         plt.close()
+    
 
 def get_nearest_stations(bio_df: pd.DataFrame, weather_df: pd.DataFrame, k: int = 1) -> pd.DataFrame:
 
@@ -679,11 +610,11 @@ def main():
             model.save_model(model_path)
             logger.info(f"model saved to file")
 
-        bio_map.create_future_timeline_map(
-            model=model,
-            years_ahead=5,
-            prediction_grid_size=20,
-            output_path='future_biodiversity_timeline.html')
+        # bio_map.create_future_timeline_map(
+        #     model=model,
+        #     years_ahead=5,
+        #     prediction_grid_size=20,
+        #     output_path='future_biodiversity_timeline.html')
 
         evaluator = ModelEvaluator(model)
     
@@ -691,7 +622,7 @@ def main():
         print_performance_summary(metrics)
         
         # plot performance
-        evaluator.create_performance_plots(
+        evaluator.create_performance_plot(
             X_test=X_test,
             y_test=y_test,
             year=year,
